@@ -1,12 +1,12 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-const serversWhitelist = [ 'DC01', 'WEB01', 'FILE01' ];
+const serversWhitelist = [ 'franserver', 'DC01', 'WEB01', 'FILE01' ];
 const poolsAllowed = [ 'IntranetPool' ];
 const groupsAllowed = [ 'GG_Ventas', 'GG_Marketing' ];
 const groupSafePrefix = 'GG_';
 
-const OU_BASE_SUFFIX = 'DC=empresa,DC=local';
+const OU_BASE_SUFFIX = 'DC=empresa,DC=com';
 
 const ROLE = {
   Admin: 'Admin',
@@ -35,15 +35,34 @@ export function isAllowedIntent(role, intent) {
 }
 
 export function getUserRole(userId) {
-  const admins = String(process.env.ADMINS || 'admin')
-    .split(',').map(s => s.trim()).filter(Boolean);
-  const helpdesk = String(process.env.HELPDESK || 'helpdesk')
-    .split(',').map(s => s.trim()).filter(Boolean);
-  if (admins.includes(userId)) return ROLE.Admin;
-  if (helpdesk.includes(userId)) return ROLE.HelpDesk;
-  // default to HelpDesk
-  return ROLE.HelpDesk;
+  const uid = String(userId || '').trim().toLowerCase();
+
+  // Admins de .env (normalizados a lowercase)
+  const adminsEnv = String(process.env.ADMINS || '')
+    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
+  // HelpDesk de .env (normalizados a lowercase)
+  const helpdeskEnv = String(process.env.HELPDESK || '')
+    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+
+  // Alias comunes del built-in Administrator (ajusta el dominio si querés)
+  const adminAliases = [
+    'administrator',
+    'empresa\\administrator',
+    'administrator@empresa.com'
+  ].map(s => s.toLowerCase());
+
+  const admins = new Set([...adminsEnv, ...adminAliases]);
+  const helpdesk = new Set(helpdeskEnv);
+
+  if (admins.has(uid)) return ROLE.Admin;
+  if (helpdesk.has(uid)) return ROLE.HelpDesk;
+
+  // Rol por defecto controlado por .env (DEV: permite Admin por defecto si querés)
+  const def = (process.env.DEFAULT_ROLE || 'HelpDesk').toLowerCase();
+  return def === 'admin' ? ROLE.Admin : ROLE.HelpDesk;
 }
+
 
 export function validateParams(intent, params) {
   const samRe = /^[a-z]+\.[a-z]+$/;
