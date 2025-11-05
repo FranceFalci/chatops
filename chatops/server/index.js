@@ -107,8 +107,8 @@ app.post('/chat', async (req, res) => {
   // userId = 'Administrator';
   userId = "Administrator"
 
-  // const role = getUserRole(userId);
-  const role = "Administrator"
+  const role = getUserRole(userId);
+  // const role = "Administrator"
   dbg(`[DBG] ${req.__corr} /chat body=`, req.body);
   dbg(`[DBG] ${req.__corr} rol detectado=`, { userId, role });
 
