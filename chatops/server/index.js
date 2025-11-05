@@ -176,6 +176,7 @@ async function executeIntent(intent, params) {
         return { ok: false, message: '❌ Intent desconocido' };
     }
   } catch (err) {
+    console.log(err)
     return { ok: false, message: '❌ Error ejecutando acción', error: String(err?.message || err) };
   }
 }
