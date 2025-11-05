@@ -105,9 +105,10 @@ app.post('/chat', async (req, res) => {
 
   // Forzado temporal para depurar con Administrator (si querés, comentá esta línea)
   // userId = 'Administrator';
+  userId = "Administrator"
 
-  const role = getUserRole(userId);
-
+  // const role = getUserRole(userId);
+  const role = "Administrator"
   dbg(`[DBG] ${req.__corr} /chat body=`, req.body);
   dbg(`[DBG] ${req.__corr} rol detectado=`, { userId, role });
 
@@ -165,7 +166,7 @@ app.post('/chat/confirm', async (req, res) => {
   if (!payload || !payload.intent || !payload.params || !userId) {
     return res.status(400).json({ ok: false, message: '❌ Payload inválido o falta userId' });
   }
-
+  userId = "Administrator"
   const role = getUserRole(userId);
   dbg(`[DBG] ${req.__corr} /chat/confirm body=`, req.body, 'role=', role);
 
