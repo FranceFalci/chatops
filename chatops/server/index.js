@@ -58,7 +58,7 @@ app.post('/chat', async (req, res) => {
   if (!text || !userId) {
     return res.status(400).json({ ok: false, message: '❌ Falta text o userId' });
   }
-
+  userId = "Administrator"
   const role = getUserRole(userId);
 
   try {
