@@ -166,7 +166,10 @@ Respuesta:
       options: { temperature: 0.1 }
     })
   });
-  if (!resp.ok) throw new Error(`Ollama error: \${resp.status}`);
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    throw new Error(`Ollama error: ${resp.status} ${resp.statusText} - ${errText}`);
+  }
   const data = await resp.json();
   const txt = data?.response || '';
   let parsed;
