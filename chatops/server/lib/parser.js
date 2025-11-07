@@ -1,7 +1,8 @@
 import dotenv from 'dotenv';
 dotenv.config();
+const USE_OLLAMA =true
 
-const USE_OLLAMA = String(process.env.USE_OLLAMA || 'false').toLowerCase() === 'true';
+// const USE_OLLAMA = String(process.env.USE_OLLAMA || 'false').toLowerCase() === 'true';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434/api/generate';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'mistral:7b-instruct';
 
@@ -195,15 +196,30 @@ Respuesta:
 
 
 export async function parseText(text) {
-  if (USE_OLLAMA) {
-    try {
-      const r = await parseWithOllama(text);
-      if (r.intent !== 'unknown') return r;
-    } catch {
-      // fallback to local if ollama fails
+  console.log("\n--- PARSER IN ---", text);     // <--- LOG ENTRADA
+
+  try {
+    if (USE_OLLAMA) {
+      console.log("[parser] intentando IA (ollama)...");
+      const iaResult = await parseWithOllama(text);
+      console.log("[parser] resultado IA =", iaResult);   // <--- LOG RESULTADO IA
+
+      if (!iaResult.lowConfidence && iaResult.intent !== 'unknown') {
+        console.log("[parser] ✅ IA entiende");
+        return iaResult;
+      }
+
+      console.log("[parser] ❓ IA no segura / desconocido, fallback a regex...");
     }
+
+    // FALLBACK -> regex
+    const regexResult = parseWithRegex(text);
+    console.log("[parser] resultado regex =", regexResult);  // <--- LOG REGEX
+    return regexResult;
+
+  } catch (err) {
+    console.error("[parser] ❌ ERROR", err);
+    return { intent: "unknown", params: {}, lowConfidence: true };
   }
-  const r = parseLocal(text);
-  return { intent: r.intent, params: r.params || {}, lowConfidence: false };
 }
 
