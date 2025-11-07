@@ -3,6 +3,7 @@ dotenv.config();
 
 const USE_OLLAMA = String(process.env.USE_OLLAMA || 'false').toLowerCase() === 'true';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434/api/generate';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'mistral:7b-instruct';
 
 const lookups = {
   servers: {
@@ -114,19 +115,57 @@ function parseLocal(text) {
 }
 
 async function parseWithOllama(text) {
-  const systemMsg = `Sos un parser de comandos para administración de Windows (Active Directory, DNS, IIS). \nDevolvés SOLO JSON válido con este esquema:\n{\n  "intent": "ad_create_user|ad_create_group|ad_add_to_group|ad_unlock|dns_add_a|dns_del_a|iis_pool_status|iis_pool_recycle|unknown",\n  "givenName": null, "surname": null, "sam": null, "ou": null, "tempPassword": null,\n  "name": null, "ip": null, "scope": null, "group": null, "server": null, "pool": null,\n  "confidence": 0.0\n}\nSi falta un valor poné null. No agregues texto fuera del JSON.`;
-  const prompt = `${systemMsg}\n\nUser message: Texto: "${text}"`;
+  const systemMsg = `
+Sos un parser de órdenes de IT (Active Directory, grupos, DNS, IIS) en español.
+Debés responder SIEMPRE un JSON plano con esta forma general:
+{
+  "intent": "<string>",
+  "givenName": "<string|null>",
+  "surname": "<string|null>",
+  "sam": "<string|null>",
+  "ou": "<string|null>",
+  "tempPassword": "<string|null>",
+  "name": "<string|null>",
+  "ip": "<string|null>",
+  "scope": "<string|null>",
+  "group": "<string|null>",
+  "server": "<string|null>",
+  "pool": "<string|null>",
+  "confidence": <0..1>
+}
+
+Reglas:
+- "intent" ∈ { "ad_create_user","ad_add_to_group","ad_create_group","ad_unlock","dns_add_a","dns_del_a","iis_pool_status","iis_pool_recycle","unknown" }.
+- Si falta un dato, poné null (no inventes).
+- Para usuarios: si no dan "sam" pero hay nombre y apellido, construí "sam" = "<nombre>.<apellido>" en minúsculas sin tildes.
+- Si no dan "ou", usá "${process.env.DEFAULT_OU || 'OU=Usuarios,DC=empresa,DC=com'}".
+- Devolvé SOLO el JSON, sin comentarios ni explicación.
+`;
+
+  // few-shot muy cortito para guiar
+  const fewshot = `
+Usuario: "crear usuario Ana Diaz en usuarios"
+Respuesta:
+{"intent":"ad_create_user","givenName":"Ana","surname":"Diaz","sam":"ana.diaz","ou":"${process.env.DEFAULT_OU || 'OU=Usuarios,DC=empresa,DC=com'}","tempPassword":null,"name":null,"ip":null,"scope":null,"group":null,"server":null,"pool":null,"confidence":0.92}
+
+Usuario: "agregar a ana.diaz al grupo ventas"
+Respuesta:
+{"intent":"ad_add_to_group","givenName":null,"surname":null,"sam":"ana.diaz","ou":null,"tempPassword":null,"name":null,"ip":null,"scope":null,"group":"GG_Ventas","server":null,"pool":null,"confidence":0.88}
+`;
+
+  const prompt = `${systemMsg}\n${fewshot}\nUsuario: "${text}"\nRespuesta:\n`;
 
   const resp = await fetch(OLLAMA_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      model: 'llama3.1:8b-instruct',
+      model: OLLAMA_MODEL,
       prompt,
-      stream: false
+      stream: false,
+      options: { temperature: 0.1 }
     })
   });
-  if (!resp.ok) throw new Error(`Ollama error: ${resp.status}`);
+  if (!resp.ok) throw new Error(`Ollama error: \${resp.status}`);
   const data = await resp.json();
   const txt = data?.response || '';
   let parsed;
@@ -153,6 +192,7 @@ async function parseWithOllama(text) {
   const lowConfidence = isNaN(confidence) || confidence < 0.75;
   return { intent, params, lowConfidence };
 }
+
 
 export async function parseText(text) {
   if (USE_OLLAMA) {
