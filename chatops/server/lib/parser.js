@@ -196,7 +196,7 @@ Respuesta:
   const prompt = `${systemMsg}\n\n${fewshot}\n\nUsuario: "${text}"\nRespuesta:`.trim();
 
   // 3) Llamada a Ollama en modo JSON (determinista)
-  const resp = await fetch(process.env.OLLAMA_URL + '/api/generate', {
+  const resp = await fetch(process.env.OLLAMA_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
