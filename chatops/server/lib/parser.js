@@ -304,12 +304,12 @@ import { spawn } from 'node:child_process';
 dotenv.config();
 
 /* ============================
-   0) CONFIG & HELPERS
+   0) CONFIG, DEMO LOGS & HELPERS
 ============================ */
 const USE_OLLAMA = (process.env.USE_OLLAMA ?? 'true').toLowerCase() === 'true';
 
 function normalizeBase(u) {
-  return (u || 'http://localhost:11434').replace(/\/api(\/(generate|chat))?\/?$/, '');
+  return (u || 'http://localhost:11434').replace(/\/api(\/(generate|chat))?\/?$/i, '');
 }
 const OLLAMA_BASE = normalizeBase(process.env.OLLAMA_URL);
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2:3b';
@@ -319,6 +319,12 @@ const DEFAULT_OU = process.env.DEFAULT_OU || 'OU=Usuarios,DC=empresa,DC=com';
 // Ejecutor: “powershell local” o “agente http” (tu PS-agent)
 const EXECUTOR = (process.env.EXECUTOR || 'pslocal'); // 'pslocal' | 'agent'
 const AGENT_URL = process.env.PS_AGENT_URL || 'http://localhost:8080'; // si EXECUTOR=agent
+
+// ===== DEMO / LOGGING =====
+const DEMO_VERBOSE = (process.env.DEMO_VERBOSE ?? 'true').toLowerCase() === 'true';
+function log(...args) { if (DEMO_VERBOSE) console.log('[DEMO]', ...args); }
+function warn(...args) { console.warn('[WARN]', ...args); }
+function errlog(...args) { console.error('[ERR]', ...args); }
 
 function norm(s) { return String(s || '').trim(); }
 function toAscii(s = '') { return s.normalize('NFKD').replace(/[\u0300-\u036f]/g, ''); }
@@ -361,7 +367,7 @@ function mapGroup(g = '') {
 }
 
 /* ============================
-   2) RBAC SIMPLE
+   2) RBAC SIMPLE (con normalización + logs)
 ============================ */
 const ACL = {
   Admin: new Set([
@@ -371,23 +377,54 @@ const ACL = {
     'ad_create_group', 'ad_list_groups', 'ad_list_users', 'ad_list_group_members'
   ]),
   Helpdesk: new Set([
-    'ad_help', 'ad_add_to_group', 'ad_reset_password', 'ad_unlock', 'ad_info_user', 'ad_list_users', 'ad_list_group_members', 'ad_list_groups'
+    'ad_help', 'ad_add_to_group', 'ad_reset_password', 'ad_unlock', 'ad_info_user',
+    'ad_list_users', 'ad_list_group_members', 'ad_list_groups'
   ])
 };
+
+const INTENT_ALIASES = new Map([
+  ['help', 'ad_help'], ['ayuda', 'ad_help']
+]);
+
+function normalizeIntent(i) {
+  const s = String(i || '').trim().toLowerCase();
+  return INTENT_ALIASES.get(s) || s;
+}
 function splitIntents(intent) {
-  return String(intent || '').split('|').map(s => s.trim()).filter(Boolean);
+  return String(intent || '')
+    .split('|')
+    .map(x => normalizeIntent(x))
+    .filter(Boolean);
+}
+function normalizeRole(r) {
+  const s = String(r || '').toLowerCase();
+  if (['admin', 'administrator', 'empresa\\administrator', 'domain admins'].includes(s)) return 'Admin';
+  if (s === 'helpdesk') return 'Helpdesk';
+  return r;
+}
+function can(role, intent) {
+  const allowed = ACL[role]?.has(intent) ?? false;
+  log(`RBAC check: role=${role} intent=${intent} => ${allowed ? 'ALLOW' : 'DENY'}`);
+  return allowed;
 }
 function authorizeAll(role = 'Admin', intentStr = 'unknown') {
+  const roleN = normalizeRole(role);
   const intents = splitIntents(intentStr);
-  const allow = ACL[role] || new Set();
-  for (const i of intents) if (!allow.has(i)) return { ok: false, denied: i };
-  return { ok: true };
+  if (!intents.length) return { ok: false, denied: '(vacío)', role: roleN };
+  for (const i of intents) if (!can(roleN, i)) return { ok: false, denied: i, role: roleN };
+  return { ok: true, role: roleN };
 }
 
 /* ============================
-   3) PARSER (Ollama + Regex)
+   3) PARSER (Ollama + Regex) con logs y timeout
 ============================ */
 async function parseWithOllama(text) {
+  const base = OLLAMA_BASE;
+  if (/\/api(\/(generate|chat))\/?$/i.test(process.env.OLLAMA_URL || '')) {
+    warn(`OLLAMA_URL parece incluir /api/... en .env. Base normalizada: ${base}`);
+  }
+  log(`Ollama base: ${base} | model: ${OLLAMA_MODEL}`);
+
   const systemMsg = `
 Eres un parser de órdenes de Active Directory en español (SOLO temas de usuarios y grupos).
 Responde SIEMPRE y SOLO un JSON válido:
@@ -404,15 +441,13 @@ Responde SIEMPRE y SOLO un JSON válido:
   "filter": "<string|null>",
   "confidence": <0..1>
 }
-
 REGLAS:
 - Si el usuario pide MÚLTIPLES acciones, concatena intents con "|", en orden lógico (p.ej., "ad_create_user|ad_add_to_group").
 - No inventes datos; usa null si falta.
 - Si hay givenName y surname pero falta sam: "<nombre>.<apellido>" en minúsculas sin tildes.
 - Si falta OU al crear usuario, usa "${DEFAULT_OU}".
 - "ventas"→"GG_Ventas"; "marketing"→"GG_Marketing".
-- Nada fuera del JSON.
-`.trim();
+- Nada fuera del JSON.`.trim();
 
   const fewshot = `
 Usuario: "crea usuario Fran Falci y agregalo a ventas"
@@ -422,25 +457,42 @@ Usuario: "listar usuarios con gomez"
 {"intent":"ad_list_users","givenName":null,"surname":null,"sam":null,"ou":null,"tempPassword":null,"group":null,"newPassword":null,"name":null,"filter":"gomez","confidence":0.9}
 
 Usuario: "que podes hacer?"
-{"intent":"ad_help","givenName":null,"surname":null,"sam":null,"ou":null,"tempPassword":null,"group":null,"newPassword":null,"name":null,"filter":null,"confidence":0.95}
-`.trim();
+{"intent":"ad_help","givenName":null,"surname":null,"sam":null,"ou":null,"tempPassword":null,"group":null,"newPassword":null,"name":null,"filter":null,"confidence":0.95}`.trim();
 
   const prompt = `${systemMsg}\n\n${fewshot}\n\nUsuario: "${text}"\nRespuesta:`;
 
-  const resp = await fetch(`${OLLAMA_BASE}/api/generate`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      prompt,
-      stream: false,
-      format: 'json',
-      options: { temperature: 0, top_p: 0.9, num_ctx: 2048, stop: ['\nUsuario:', '\n\nUsuario:'] }
-    })
-  });
-  if (!resp.ok) throw new Error(`Ollama error: ${resp.status} ${resp.statusText} - ${await resp.text().catch(() => '')}`);
+  const url = `${base}/api/generate`;
+  log(`→ [IA] POST ${url}`);
+  const t0 = Date.now();
 
-  const data = await resp.json();
+  let resp;
+  try {
+    const ctl = new AbortController();
+    const tid = setTimeout(() => ctl.abort('timeout'), 15000);
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt,
+        stream: false,
+        format: 'json',
+        options: { temperature: 0, top_p: 0.9, num_ctx: 2048, stop: ['\nUsuario:', '\n\nUsuario:'] }
+      }),
+      signal: ctl.signal
+    }).finally(() => clearTimeout(tid));
+  } catch (e) {
+    errlog(`IA fetch error: ${e}`);
+    throw e;
+  }
+
+  const rawTxt = await resp.text().catch(() => '');
+  log(`← [IA] ${resp.status} ${resp.statusText} (${Date.now() - t0}ms) body=${rawTxt.slice(0, 300)}${rawTxt.length > 300 ? '...' : ''}`);
+  if (!resp.ok) throw new Error(`Ollama error: ${resp.status} ${resp.statusText} - ${rawTxt}`);
+
+  let data;
+  try { data = JSON.parse(rawTxt); } catch { data = { response: rawTxt }; }
+
   let txt = String(data?.response || '').trim();
   if (!txt.startsWith('{')) {
     const s = txt.indexOf('{'); const e = txt.lastIndexOf('}');
@@ -448,7 +500,11 @@ Usuario: "que podes hacer?"
   }
 
   let raw;
-  try { raw = JSON.parse(txt); } catch { return { intent: 'unknown', params: {}, lowConfidence: true }; }
+  try { raw = JSON.parse(txt); }
+  catch (e) {
+    errlog('IA JSON parse fail, falling back to unknown:', txt);
+    return { intent: 'unknown', params: {}, lowConfidence: true };
+  }
 
   let intent = String(raw.intent || 'unknown');
   const out = {
@@ -472,6 +528,7 @@ Usuario: "que podes hacer?"
   const confidence = isNaN(conf) ? (intent === 'unknown' ? 0.2 : 0.85) : Math.max(0, Math.min(1, conf));
   const lowConfidence = confidence < 0.75 || intent === 'unknown';
 
+  log(`IA parsed → intent=${intent} lowConfidence=${lowConfidence} params=`, out);
   return { intent, params: out, lowConfidence };
 }
 
@@ -536,7 +593,7 @@ function parseWithRegex(text) {
   if (m) return { intent: 'ad_list_group_members', params: { group: m[2] }, lowConfidence: false };
 
   // ayuda
-  if (/\b(ayuda|que puedo hacer|opciones|comandos|help)\b/i.test(t)) {
+  if (/\b(ayuda|que puedo hacer|que podes hacer|opciones|comandos|help)\b/i.test(t)) {
     return { intent: 'ad_help', params: {}, lowConfidence: false };
   }
 
@@ -549,26 +606,36 @@ export async function parseText(text) {
       const ia = await parseWithOllama(text);
       if (!ia.lowConfidence && ia.intent !== 'unknown') return ia;
     }
-  } catch { /* seguimos al regex */ }
+  } catch (e) {
+    errlog('parseWithOllama error (seguimos con regex):', e?.message || e);
+  }
   return parseWithRegex(text);
 }
 
 /* ============================
-   4) EJECUTORES (PS local / agente)
+   4) EJECUTORES (PS local / agente) con logs
 ============================ */
 async function runPowershell(script, args = []) {
+  log('PS> launching', { script: script.trim().split('\n')[0] + ' ...', args });
   return new Promise((resolve) => {
     const ps = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script, ...args], { windowsHide: true });
     let out = '', err = '';
-    ps.stdout.on('data', d => out += d.toString());
-    ps.stderr.on('data', d => err += d.toString());
-    ps.on('close', code => resolve({ code, out: out.trim(), err: err.trim() }));
+    ps.stdout.on('data', d => { const s = d.toString(); out += s; if (DEMO_VERBOSE) process.stdout.write('[PS][out] ' + s); });
+    ps.stderr.on('data', d => { const s = d.toString(); err += s; if (DEMO_VERBOSE) process.stderr.write('[PS][err] ' + s); });
+    ps.on('close', code => {
+      log(`PS> exit code=${code}`);
+      resolve({ code, out: out.trim(), err: err.trim() });
+    });
   });
 }
 
 async function agentPost(path, json) {
-  const res = await fetch(`${AGENT_URL}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(json) });
+  const url = `${AGENT_URL}${path}`;
+  log(`→ [AGENT] POST ${url} body=`, json);
+  const t0 = Date.now();
+  const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(json) });
   const txt = await res.text();
+  log(`← [AGENT] ${res.status} (${Date.now() - t0}ms) body=${txt.slice(0, 200)}${txt.length > 200 ? '...' : ''}`);
   return { code: res.ok ? 0 : res.status, out: res.ok ? txt : '', err: res.ok ? '' : txt };
 }
 
@@ -649,7 +716,7 @@ async function adListGroups({ filter = null }) {
   if (EXECUTOR === 'agent') return agentPost('/ad/list-groups', { filter });
   const script = `
 Import-Module ActiveDirectory
-$flt = ${filter ? `"Name -like '*${filter}*'"` : '"*"'};
+$flt = ${filter ? `"Name -like '*${filter}*'"` : '"*"'}; 
 Get-ADGroup -Filter $flt | Select-Object Name, GroupScope, DistinguishedName | ConvertTo-Json -Depth 2
 `;
   return runPowershell(script);
@@ -659,7 +726,7 @@ async function adListUsers({ filter = null }) {
   if (EXECUTOR === 'agent') return agentPost('/ad/list-users', { filter });
   const script = `
 Import-Module ActiveDirectory
-$flt = ${filter ? `"Name -like '*${filter}*'"` : '"*"'};
+$flt = ${filter ? `"Name -like '*${filter}*'"` : '"*"'}; 
 Get-ADUser -Filter $flt -Properties DisplayName,SamAccountName,Enabled |
   Select-Object DisplayName,SamAccountName,Enabled | ConvertTo-Json -Depth 2
 `;
@@ -679,7 +746,6 @@ Get-ADGroupMember -Identity "${group}" -Recursive | Select-Object Name, SamAccou
    5) PIPELINE (friendly)
 ============================ */
 function friendlyErrorIdea(intent, params) {
-  // Mensaje amable + idea de cómo hacerlo si falta algo
   switch (intent) {
     case 'ad_create_user':
       return "No pude crear el usuario. Idea: indicame nombre y apellido (p. ej. “crear usuario Ana Diaz en usuarios”).";
@@ -778,7 +844,7 @@ async function executeIntent(intent, p) {
       case 'ad_info_user': {
         if (!p.sam) return ko(friendlyErrorIdea(intent, p));
         const r = await adInfo({ sam: p.sam });
-        if (r.code === 0) return ok(`ℹ️ Info de ${p.sam}: ${r.out || '(sin datos)'}`, { data: safeJson(r.out) });
+        if (r.code === 0) return ok(`ℹ️ Info de ${p.sam}: ${r.out ? 'ver data' : '(sin datos)'}`, { data: safeJson(r.out) });
         return ko(`No pude obtener info de ${p.sam}. ${friendlyErrorIdea('ad_info_user', p)}\nDetalle: ${r.err || r.out}`);
       }
 
@@ -829,22 +895,45 @@ function prettyCount(jsonStr) {
 function safeJson(s) { try { return JSON.parse(s); } catch { return s; } }
 
 /* ============================
-   6) HANDLER PRINCIPAL
+   6) HANDLER PRINCIPAL (con logs end-to-end)
 ============================ */
 export async function handleChat({ text, userRole = 'Admin' }) {
+  log('INCOMING:', { text, userRole });
+
   const parsed = await parseText(text);
+  log('PARSED:', parsed);
+
   const auth = authorizeAll(userRole, parsed.intent);
-  if (!auth.ok) return ko(`❌ No tenés permisos para ${auth.denied}.`, { intent: parsed.intent, role: userRole });
+  log('AUTH:', auth);
+  if (!auth.ok) return ko(`❌ No tenés permisos para ${auth.denied}.`, { intent: parsed.intent, role: auth.role || userRole });
 
   // ejecutar intents combinados en orden
   const intents = splitIntents(parsed.intent);
+  log('EXECUTE intents:', intents);
+
   let last;
   for (const i of intents) {
+    log(`→ EXEC ${i}`, parsed.params || {});
     last = await executeIntent(i, parsed.params || {});
+    log(`← EXEC ${i} result:`, last);
     if (!last.ok) return last; // cortar en primer error “amistoso”
   }
-  // si no hubo salida (p.ej. create + add), enviamos un resumen
   if (!last) return ok("Listo. 😉");
   return last;
 }
 
+/* ============================
+   7) Ping Ollama al iniciar (no bloqueante)
+============================ */
+(async () => {
+  if (!USE_OLLAMA) return;
+  try {
+    const url = `${OLLAMA_BASE}/api/tags`;
+    log(`Ping Ollama: GET ${url}`);
+    const r = await fetch(url, { method: 'GET' });
+    const t = await r.text();
+    log(`Ping Ollama resp: ${r.status}`, t.slice(0, 120));
+  } catch (e) {
+    warn('No puedo contactar Ollama en startup. Revisá OLLAMA_URL/puerto/firewall. Detalle:', e.message);
+  }
+})();
