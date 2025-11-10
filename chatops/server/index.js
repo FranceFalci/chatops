@@ -105,12 +105,11 @@ app.post('/chat', async (req, res) => {
     return res.status(400).json({ ok: false, message: '❌ Falta text o userId' });
   }
 
-  // Forzado temporal para depurar con Administrator (si querés, comentá esta línea)
+  // DEBUG: fuerza usuario si querés
   // userId = 'Administrator';
-  userId = "Administrator"
+  userId = 'Administrator';
 
   const role = getUserRole(userId);
-  // const role = "Administrator"
   dbg(`[DBG] ${req.__corr} /chat body=`, req.body);
   dbg(`[DBG] ${req.__corr} rol detectado=`, { userId, role });
 
@@ -122,41 +121,88 @@ app.post('/chat', async (req, res) => {
       return res.json({ ok: false, message: '❌ No entendí, por favor reformulá' });
     }
 
+    // --- HELP: responder directo (pero respetando RBAC)
+    if (parsed.intent === 'ad_help') {
+      if (!isAllowedIntent(role, 'ad_help')) {
+        return res.json({ ok: false, message: '❌ No tenés permisos para ad_help', role, intent: 'ad_help' });
+      }
+      return res.json({
+        ok: true,
+        message: [
+          'Puedo hacer:',
+          '- crear usuario Nombre Apellido [en OU] [sam: nombre.apellido]',
+          '- agregar a usuario.algo al grupo VENTAS',
+          '- resetear clave a usuario.algo [a NuevaClave123!]',
+          '- desbloquear/habilitar/deshabilitar/eliminar usuario.algo',
+          '- info de usuario.algo',
+          '- crear grupo GG_MiGrupo [scope Global|Local|Universal] [en OU]',
+          '- listar usuarios [con filtro]',
+          '- listar grupos [que contengan filtro]',
+          '- listar miembros de GG_MiGrupo',
+          '- DNS: crear/borrar A host -> 10.0.0.10',
+          '- IIS: estado/reciclar app pool'
+        ].join('\n')
+      });
+    }
+
+    // --- intents compuestos
+    const intents = String(parsed.intent).split('|').map(s => s.trim()).filter(Boolean);
+    if (!intents.length) {
+      return res.json({ ok: false, message: '❌ Intent vacío' });
+    }
+
+    // RBAC por todos los intents
     if (!isAllowedIntent(role, parsed.intent)) {
       return res.json({ ok: false, message: `❌ No tenés permisos para ${parsed.intent}`, role, intent: parsed.intent });
     }
 
-    const wlErr = enforceWhitelists(parsed.intent, parsed.params);
-    if (wlErr) {
-      return res.json({ ok: false, message: `❌ ${wlErr}`, intent: parsed.intent, params: parsed.params });
-    }
-
-    const valErr = validateParams(parsed.intent, parsed.params);
-    dbg(`[DBG] ${req.__corr} validateParams=`, valErr || 'OK');
-    if (valErr) {
-      return res.json({ ok: false, message: `❌ ${valErr}`, intent: parsed.intent, params: parsed.params });
-    }
-
-    // Normalización explícita de OU para que NUNCA vaya null al PS Agent
-    if (parsed.intent === 'ad_create_user' || parsed.intent === 'ad_create_group') {
+    // Normalizar OU si hace falta (no dejes null para creaciones)
+    if (intents.some(i => i === 'ad_create_user' || i === 'ad_create_group')) {
       if (!parsed.params.ou) {
         parsed.params.ou = process.env.DEFAULT_OU || null;
         dbg(`[DBG] ${req.__corr} OU faltaba, seteo OU desde DEFAULT_OU=`, parsed.params.ou);
-      }
-      if (!parsed.params.ou) {
-        return res.json({ ok: false, message: '❌ Falta OU (DEFAULT_OU no configurada). Definí DEFAULT_OU en .env o decí "en OU=...".' });
+        if (!parsed.params.ou) {
+          return res.json({ ok: false, message: '❌ Falta OU (DEFAULT_OU no configurada). Definí DEFAULT_OU en .env o decí "en OU=...".' });
+        }
       }
     }
 
+    // Whitelists + Validaciones por CADA intent
+    for (const it of intents) {
+      const wlErr = enforceWhitelists(it, parsed.params);
+      if (wlErr) {
+        return res.json({ ok: false, message: `❌ ${wlErr}`, intent: it, params: parsed.params });
+      }
+      const valErr = validateParams(it, parsed.params);
+      dbg(`[DBG] ${req.__corr} validateParams(${it})=`, valErr || 'OK');
+      if (valErr) {
+        return res.json({ ok: false, message: `❌ ${valErr}`, intent: it, params: parsed.params });
+      }
+    }
+
+    // ¿requiere aprobación alguno?
     if (requiresApproval(parsed.intent)) {
       const payload = { intent: parsed.intent, params: parsed.params, userId };
       writeLog({ ts: new Date().toISOString(), corr: req.__corr, userId, intent: parsed.intent, params: parsed.params, resultOk: true, message: 'requiresApproval' });
       return res.json({ ok: true, requiresApproval: true, message: '⚠️ Esta acción requiere confirmación', payload });
     }
 
-    const execResult = await executeIntent(req.__corr, parsed.intent, parsed.params, userId);
-    writeLog({ ts: new Date().toISOString(), corr: req.__corr, userId, intent: parsed.intent, params: parsed.params, resultOk: execResult.ok, message: execResult.message, data: execResult.data || null, error: execResult.error || null });
-    return res.json(execResult);
+    // EJECUCIÓN SECUENCIAL
+    const results = [];
+    for (const it of intents) {
+      const r = await executeIntent(req.__corr, it, parsed.params, userId);
+      results.push({ intent: it, ...r });
+      if (!r.ok) {
+        // si falla uno, cortar y devolver contexto
+        writeLog({ ts: new Date().toISOString(), corr: req.__corr, userId, intent: it, params: parsed.params, resultOk: r.ok, message: r.message, data: r.data || null, error: r.error || null });
+        return res.json({ ok: false, message: r.message, step: it, previous: results.slice(0, -1) });
+      }
+    }
+
+    // todo OK
+    writeLog({ ts: new Date().toISOString(), corr: req.__corr, userId, intent: parsed.intent, params: parsed.params, resultOk: true, message: 'OK', data: results });
+    return res.json({ ok: true, message: '✅ Acciones completadas', results });
+
   } catch (err) {
     dbg(`[ERR] ${req.__corr} /chat error=`, err);
     return res.status(500).json({ ok: false, message: '❌ Error interno', error: String(err?.message || err) });
@@ -168,36 +214,59 @@ app.post('/chat/confirm', async (req, res) => {
   if (!payload || !payload.intent || !payload.params || !userId) {
     return res.status(400).json({ ok: false, message: '❌ Payload inválido o falta userId' });
   }
-  userId = "Administrator"
+
+  // DEBUG
+  userId = 'Administrator';
   const role = getUserRole(userId);
   dbg(`[DBG] ${req.__corr} /chat/confirm body=`, req.body, 'role=', role);
+
+  const intents = String(payload.intent).split('|').map(s => s.trim()).filter(Boolean);
+  if (!intents.length) {
+    return res.json({ ok: false, message: '❌ Intent vacío' });
+  }
 
   if (!isAllowedIntent(role, payload.intent)) {
     return res.json({ ok: false, message: `❌ No tenés permisos para ${payload.intent}`, role, intent: payload.intent });
   }
 
   try {
-    const wlErr = enforceWhitelists(payload.intent, payload.params);
-    if (wlErr) {
-      return res.json({ ok: false, message: `❌ ${wlErr}`, intent: payload.intent, params: payload.params });
-    }
-    const valErr = validateParams(payload.intent, payload.params);
-    if (valErr) {
-      return res.json({ ok: false, message: `❌ ${valErr}`, intent: payload.intent, params: payload.params });
-    }
-
-    // Normalización OU también aquí
-    if ((payload.intent === 'ad_create_user' || payload.intent === 'ad_create_group') && !payload.params.ou) {
-      payload.params.ou = process.env.DEFAULT_OU || null;
-      dbg(`[DBG] ${req.__corr} (confirm) OU faltaba, set desde DEFAULT_OU=`, payload.params.ou);
+    // Normalización OU para creaciones
+    if (intents.some(i => i === 'ad_create_user' || i === 'ad_create_group')) {
       if (!payload.params.ou) {
-        return res.json({ ok: false, message: '❌ Falta OU (DEFAULT_OU no configurada).' });
+        payload.params.ou = process.env.DEFAULT_OU || null;
+        dbg(`[DBG] ${req.__corr} (confirm) OU faltaba, set desde DEFAULT_OU=`, payload.params.ou);
+        if (!payload.params.ou) {
+          return res.json({ ok: false, message: '❌ Falta OU (DEFAULT_OU no configurada).' });
+        }
       }
     }
 
-    const execResult = await executeIntent(req.__corr, payload.intent, payload.params, userId);
-    writeLog({ ts: new Date().toISOString(), corr: req.__corr, userId, intent: payload.intent, params: payload.params, resultOk: execResult.ok, message: execResult.message, data: execResult.data || null, error: execResult.error || null });
-    return res.json(execResult);
+    // Whitelists + Validaciones por intent
+    for (const it of intents) {
+      const wlErr = enforceWhitelists(it, payload.params);
+      if (wlErr) {
+        return res.json({ ok: false, message: `❌ ${wlErr}`, intent: it, params: payload.params });
+      }
+      const valErr = validateParams(it, payload.params);
+      if (valErr) {
+        return res.json({ ok: false, message: `❌ ${valErr}`, intent: it, params: payload.params });
+      }
+    }
+
+    // Ejecutar secuencial
+    const results = [];
+    for (const it of intents) {
+      const r = await executeIntent(req.__corr, it, payload.params, userId);
+      results.push({ intent: it, ...r });
+      if (!r.ok) {
+        writeLog({ ts: new Date().toISOString(), corr: req.__corr, userId, intent: it, params: payload.params, resultOk: r.ok, message: r.message, data: r.data || null, error: r.error || null });
+        return res.json({ ok: false, message: r.message, step: it, previous: results.slice(0, -1) });
+      }
+    }
+
+    writeLog({ ts: new Date().toISOString(), corr: req.__corr, userId, intent: payload.intent, params: payload.params, resultOk: true, message: 'OK', data: results });
+    return res.json({ ok: true, message: '✅ Acciones completadas', results });
+
   } catch (err) {
     dbg(`[ERR] ${req.__corr} /chat/confirm error=`, err);
     return res.status(500).json({ ok: false, message: '❌ Error interno', error: String(err?.message || err) });
@@ -274,6 +343,66 @@ async function executeIntent(corr, intent, params, actor) {
         const r = await psAgent.iisPoolRecycle(body);
         dbg(`[PS<] ${corr} iis_pool_recycle resp=`, r, `(${Date.now() - t0}ms)`);
         return { ok: true, message: `✅ Pool ${params.pool} en ${params.server} reciclado`, data: r };
+      }
+      case 'ad_help': {
+        // por si llegara a ejecutarse aquí (normalmente se responde arriba)
+        return { ok: true, message: 'ℹ️ Usa /chat para ver ayuda (ya se respondió arriba).' };
+      }
+      case 'ad_reset_password': {
+        const body = { sam: params.sam, tempPassword: params.tempPassword || undefined };
+        dbg(`[PS>] ${corr} ad_reset_password body=`, body);
+        const r = await psAgent.adResetPassword(body);
+        dbg(`[PS<] ${corr} ad_reset_password resp=`, r, `(${Date.now() - t0}ms)`);
+        return { ok: true, message: `✅ Clave reseteada para ${params.sam}`, data: r };
+      }
+      case 'ad_disable_user': {
+        const body = { sam: params.sam };
+        dbg(`[PS>] ${corr} ad_disable_user body=`, body);
+        const r = await psAgent.adDisableUser(body);
+        dbg(`[PS<] ${corr} ad_disable_user resp=`, r, `(${Date.now() - t0}ms)`);
+        return { ok: true, message: `✅ Usuario ${params.sam} deshabilitado`, data: r };
+      }
+      case 'ad_enable_user': {
+        const body = { sam: params.sam };
+        dbg(`[PS>] ${corr} ad_enable_user body=`, body);
+        const r = await psAgent.adEnableUser(body);
+        dbg(`[PS<] ${corr} ad_enable_user resp=`, r, `(${Date.now() - t0}ms)`);
+        return { ok: true, message: `✅ Usuario ${params.sam} habilitado`, data: r };
+      }
+      case 'ad_delete_user': {
+        const body = { sam: params.sam };
+        dbg(`[PS>] ${corr} ad_delete_user body=`, body);
+        const r = await psAgent.adDeleteUser(body);
+        dbg(`[PS<] ${corr} ad_delete_user resp=`, r, `(${Date.now() - t0}ms)`);
+        return { ok: true, message: `✅ Usuario ${params.sam} eliminado`, data: r };
+      }
+      case 'ad_info_user': {
+        const q = { sam: params.sam };
+        dbg(`[PS>] ${corr} ad_info_user query=`, q);
+        const r = await psAgent.adInfoUser(q);
+        dbg(`[PS<] ${corr} ad_info_user resp=`, r, `(${Date.now() - t0}ms)`);
+        return { ok: true, message: `ℹ️ Info de ${params.sam}`, data: r };
+      }
+      case 'ad_list_users': {
+        const q = { filter: params.filter || '' };
+        dbg(`[PS>] ${corr} ad_list_users query=`, q);
+        const r = await psAgent.adListUsers(q);
+        dbg(`[PS<] ${corr} ad_list_users resp=`, r, `(${Date.now() - t0}ms)`);
+        return { ok: true, message: '📋 Usuarios', data: r };
+      }
+      case 'ad_list_groups': {
+        const q = { filter: params.filter || '' };
+        dbg(`[PS>] ${corr} ad_list_groups query=`, q);
+        const r = await psAgent.adListGroups(q);
+        dbg(`[PS<] ${corr} ad_list_groups resp=`, r, `(${Date.now() - t0}ms)`);
+        return { ok: true, message: '📋 Grupos', data: r };
+      }
+      case 'ad_list_group_members': {
+        const q = { group: params.group };
+        dbg(`[PS>] ${corr} ad_list_group_members query=`, q);
+        const r = await psAgent.adListGroupMembers(q);
+        dbg(`[PS<] ${corr} ad_list_group_members resp=`, r, `(${Date.now() - t0}ms)`);
+        return { ok: true, message: `📋 Miembros de ${params.group}`, data: r };
       }
       default:
         return { ok: false, message: '❌ Intent desconocido' };
