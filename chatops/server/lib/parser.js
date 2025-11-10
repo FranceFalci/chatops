@@ -1,6 +1,8 @@
 // parser.js  — WinOps Chat (AD + Ollama) — versión extendida
+
 import dotenv from 'dotenv';
 dotenv.config();
+
 
 /* ============================
    0) CONFIG & HELPERS
@@ -390,17 +392,17 @@ function parseWithRegex(text) { return parseLocal(text); }
 export async function parseText(text) {
   console.log("\n--- PARSER IN ---", text);
 
-  try {
-    if (USE_OLLAMA) {
+  // 0) Fast-path: ayuda (siempre, sin depender de USE_OLLAMA)
+  if (/^(ayuda|help|qué pod(e|é)s hacer\??|que pod(e|é)s hacer\??)$/i.test(text) || /\b(ayuda|help)\b/i.test(text)) {
+    const fast = { intent: 'ad_help', params: {}, lowConfidence: false };
+    console.log("[parser] fast-path help =", fast);
+    return fast;
+  }
+
+  // 1) Intentá IA si está habilitada
+  if (USE_OLLAMA) {
+    try {
       console.log("[parser] intentando IA (ollama)...");
-        // 0) Fast-path: help
-        if (/^(ayuda|help|qué pod(e|é)s hacer\??|que pod(e|é)s hacer\??)$/i.test(text) || /\b(ayuda|help)\b/i.test(text)) {
-          const fast = { intent: 'ad_help', params: {}, lowConfidence: false };
-          console.log("[parser] fast-path help =", fast);
-          return fast;
-        }
-
-
       const iaResult = await parseWithOllama(text);
       console.log("[parser] resultado IA =", iaResult);
 
@@ -409,14 +411,16 @@ export async function parseText(text) {
         return iaResult;
       }
       console.log("[parser] ❓ IA no segura / desconocido, fallback a regex...");
+    } catch (err) {
+      console.warn("[parser] ⚠️ IA falló, continuo con regex. Error:", err?.name || err, err?.message || "");
+      // no returns aquí: seguimos a regex
     }
-
-    const regexResult = parseWithRegex(text);
-    console.log("[parser] resultado regex =", regexResult);
-    return regexResult;
-
-  } catch (err) {
-    console.error("[parser] ❌ ERROR", err);
-    return { intent: "ad_help", params: {}, lowConfidence: true }; // fallback amable
   }
+
+  // 2) Fallback a regex SIEMPRE
+  const regexResult = parseWithRegex(text);
+  // si la regex detecta help, marcá alta confianza
+  if (regexResult.intent === 'ad_help') regexResult.lowConfidence = false;
+  console.log("[parser] resultado regex =", regexResult);
+  return regexResult;
 }
