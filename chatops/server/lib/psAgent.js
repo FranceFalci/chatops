@@ -1,37 +1,37 @@
-import dotenv from 'dotenv';
-dotenv.config();
+// import dotenv from 'dotenv';
+// dotenv.config();
 
-const PS_BASE = process.env.PS_BASE || 'http://localhost:8080';
-const API_KEY = process.env.PS_API_KEY || '';
+// const PS_BASE = process.env.PS_BASE || 'http://localhost:8080';
+// const API_KEY = process.env.PS_API_KEY || '';
 
-async function doFetch(url, options = {}) {
-  const headers = {
-    'content-type': 'application/json',
-    'x-api-key': API_KEY,
-    ...(options.headers || {})
-  };
-  const resp = await fetch(url, { ...options, headers });
-  if (!resp.ok) {
-    const text = await resp.text().catch(() => '');
-    throw new Error(`PS Agent error ${resp.status}: ${text}`);
-  }
-  const ct = resp.headers.get('content-type') || '';
-  if (ct.includes('application/json')) return resp.json();
-  return resp.text();
-}
+// async function doFetch(url, options = {}) {
+//   const headers = {
+//     'content-type': 'application/json',
+//     'x-api-key': API_KEY,
+//     ...(options.headers || {})
+//   };
+//   const resp = await fetch(url, { ...options, headers });
+//   if (!resp.ok) {
+//     const text = await resp.text().catch(() => '');
+//     throw new Error(`PS Agent error ${resp.status}: ${text}`);
+//   }
+//   const ct = resp.headers.get('content-type') || '';
+//   if (ct.includes('application/json')) return resp.json();
+//   return resp.text();
+// }
 
-async function postJson(path, body) {
-  return doFetch(`${PS_BASE}${path}`, {
-    method: 'POST',
-    body: JSON.stringify(body || {})
-  });
-}
+// async function postJson(path, body) {
+//   return doFetch(`${PS_BASE}${path}`, {
+//     method: 'POST',
+//     body: JSON.stringify(body || {})
+//   });
+// }
 
-async function getJson(path, query) {
-  const qs = new URLSearchParams(query || {}).toString();
-  const url = `${PS_BASE}${path}${qs ? `?${qs}` : ''}`;
-  return doFetch(url, { method: 'GET' });
-}
+// async function getJson(path, query) {
+//   const qs = new URLSearchParams(query || {}).toString();
+//   const url = `${PS_BASE}${path}${qs ? `?${qs}` : ''}`;
+//   return doFetch(url, { method: 'GET' });
+// }
 
 
 // ./lib/psAgent.js  (ESM)
