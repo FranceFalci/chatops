@@ -119,12 +119,43 @@ function parseLocal(text) {
   return { intent: 'unknown', params: {} };
 }
 
-async function parseWithOllama(text) {
+// utils mínimas
+const DEFAULT_OU = process.env.DEFAULT_OU || 'OU=Usuarios,DC=empresa,DC=com';
+
+function toAscii(s = '') {
+  return s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+}
+function buildSam(givenName, surname) {
+  if (!givenName || !surname) return null;
+  const g = toAscii(String(givenName).trim().toLowerCase());
+  const s = toAscii(String(surname).trim().toLowerCase());
+  if (!g || !s) return null;
+  return `${g}.${s}`.replace(/[^a-z0-9._-]/g, '');
+}
+function coalesce(v, def = null) { return (v === undefined || v === '') ? def : v; }
+function firstJsonChunk(txt = '') {
+  // Extrae el primer bloque {...} balanceado de la respuesta por si el modelo habló de más
+  const start = txt.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < txt.length; i++) {
+    const ch = txt[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return txt.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+export async function parseWithOllama(text) {
+  // 1) Prompt estricto + few-shot minimal
   const systemMsg = `
-Sos un parser de órdenes de IT (Active Directory, grupos, DNS, IIS) en español.
-Debés responder SIEMPRE un JSON plano con esta forma general:
+Eres un parser de órdenes de IT (Active Directory, grupos, DNS, IIS) en español.
+Debes responder SIEMPRE y SOLO un JSON válido con este esquema EXACTO:
 {
-  "intent": "<string>",
+  "intent": "ad_create_user|ad_add_to_group|ad_create_group|ad_unlock|dns_add_a|dns_del_a|iis_pool_status|iis_pool_recycle|unknown",
   "givenName": "<string|null>",
   "surname": "<string|null>",
   "sam": "<string|null>",
@@ -136,70 +167,107 @@ Debés responder SIEMPRE un JSON plano con esta forma general:
   "group": "<string|null>",
   "server": "<string|null>",
   "pool": "<string|null>",
-  "confidence": <0..1>
+  "confidence": <number entre 0 y 1>
 }
 
-Reglas:
-- "intent" ∈ { "ad_create_user","ad_add_to_group","ad_create_group","ad_unlock","dns_add_a","dns_del_a","iis_pool_status","iis_pool_recycle","unknown" }.
-- Si falta un dato, poné null (no inventes).
-- Para usuarios: si no dan "sam" pero hay nombre y apellido, construí "sam" = "<nombre>.<apellido>" en minúsculas sin tildes.
-- Si no dan "ou", usá "${process.env.DEFAULT_OU || 'OU=Usuarios,DC=empresa,DC=com'}".
-- Devolvé SOLO el JSON, sin comentarios ni explicación.
+REGLAS:
+- Si falta un dato, usa null. NO inventes.
+- Para usuarios: si tienes givenName y surname pero falta sam, construye sam = "<nombre>.<apellido>" en minúsculas sin tildes ni espacios.
+- Si falta "ou" en operaciones de usuario, usa "${DEFAULT_OU}".
+- No agregues texto fuera del JSON. No uses markdown, no comentes.
+- Si la intención no es inequívoca, devuelve "intent":"unknown" con confidence ≤ 0.5.
 `;
 
-  // few-shot muy cortito para guiar
   const fewshot = `
 Usuario: "crear usuario Ana Diaz en usuarios"
 Respuesta:
-{"intent":"ad_create_user","givenName":"Ana","surname":"Diaz","sam":"ana.diaz","ou":"${process.env.DEFAULT_OU || 'OU=Usuarios,DC=empresa,DC=com'}","tempPassword":null,"name":null,"ip":null,"scope":null,"group":null,"server":null,"pool":null,"confidence":0.92}
+{"intent":"ad_create_user","givenName":"Ana","surname":"Diaz","sam":"ana.diaz","ou":"${DEFAULT_OU}","tempPassword":null,"name":null,"ip":null,"scope":null,"group":null,"server":null,"pool":null,"confidence":0.92}
 
 Usuario: "agregar a ana.diaz al grupo ventas"
 Respuesta:
 {"intent":"ad_add_to_group","givenName":null,"surname":null,"sam":"ana.diaz","ou":null,"tempPassword":null,"name":null,"ip":null,"scope":null,"group":"GG_Ventas","server":null,"pool":null,"confidence":0.88}
-`;
 
-  const prompt = `${systemMsg}\n${fewshot}\nUsuario: "${text}"\nRespuesta:\n`;
+Usuario: "no se que quiero, mostra opciones"
+Respuesta:
+{"intent":"unknown","givenName":null,"surname":null,"sam":null,"ou":null,"tempPassword":null,"name":null,"ip":null,"scope":null,"group":null,"server":null,"pool":null,"confidence":0.2}
+`.trim();
 
-  const resp = await fetch(OLLAMA_URL, {
+  // 2) Construimos prompt final
+  const prompt = `${systemMsg}\n\n${fewshot}\n\nUsuario: "${text}"\nRespuesta:`.trim();
+
+  // 3) Llamada a Ollama en modo JSON (determinista)
+  const resp = await fetch(process.env.OLLAMA_URL + '/api/generate', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      model: OLLAMA_MODEL,
+      model: process.env.OLLAMA_MODEL,
       prompt,
       stream: false,
-      options: { temperature: 0.1 }
+      // ¡clave!: forzar JSON, ser deterministas y cortar antes de que siga hablando
+      format: 'json',
+      options: {
+        temperature: 0,
+        top_p: 0.9,
+        num_ctx: 2048,
+        stop: ['\nUsuario:', '\n\nUsuario:'] // si se le ocurre seguir, que corte
+      }
     })
   });
+
   if (!resp.ok) {
     const errText = await resp.text().catch(() => '');
     throw new Error(`Ollama error: ${resp.status} ${resp.statusText} - ${errText}`);
   }
   const data = await resp.json();
-  const txt = data?.response || '';
-  let parsed;
+  let txt = data?.response ?? '';
+
+  // 4) Reparación mínima si el modelo habló de más
+  if (txt && txt.trim()[0] !== '{') {
+    const maybe = firstJsonChunk(txt);
+    if (maybe) txt = maybe;
+  }
+
+  // 5) Parseo + saneo + defaults
+  let raw;
   try {
-    parsed = JSON.parse(txt);
+    raw = JSON.parse(txt);
   } catch {
     return { intent: 'unknown', params: {}, lowConfidence: true };
   }
-  const intent = parsed.intent || 'unknown';
-  const params = {
-    givenName: parsed.givenName || null,
-    surname: parsed.surname || null,
-    sam: parsed.sam || null,
-    ou: parsed.ou || null,
-    tempPassword: parsed.tempPassword || null,
-    name: parsed.name || null,
-    ip: parsed.ip || null,
-    scope: parsed.scope || null,
-    group: parsed.group || null,
-    server: parsed.server || null,
-    pool: parsed.pool || null
+
+  // normalizamos campos y aplicamos reglas
+  let intent = String(raw.intent || 'unknown');
+  const out = {
+    givenName: coalesce(raw.givenName, null),
+    surname: coalesce(raw.surname, null),
+    sam: coalesce(raw.sam, null),
+    ou: coalesce(raw.ou, null),
+    tempPassword: coalesce(raw.tempPassword, null),
+    name: coalesce(raw.name, null),
+    ip: coalesce(raw.ip, null),
+    scope: coalesce(raw.scope, null),
+    group: coalesce(raw.group, null),
+    server: coalesce(raw.server, null),
+    pool: coalesce(raw.pool, null),
   };
-  const confidence = Number(parsed.confidence || 0);
-  const lowConfidence = isNaN(confidence) || confidence < 0.75;
-  return { intent, params, lowConfidence };
+
+  // si hay nombre+apellido y no hay sam, lo construimos
+  if (!out.sam && out.givenName && out.surname) {
+    out.sam = buildSam(out.givenName, out.surname);
+  }
+  // si es operación de usuario y no hay OU, ponemos la default
+  if (['ad_create_user', 'ad_add_to_group', 'ad_unlock'].includes(intent)) {
+    if (!out.ou) out.ou = DEFAULT_OU;
+  }
+
+  // confidence y umbral
+  const conf = Number(raw.confidence);
+  const confidence = isNaN(conf) ? (intent === 'unknown' ? 0.2 : 0.85) : Math.max(0, Math.min(1, conf));
+  const lowConfidence = confidence < 0.75 || intent === 'unknown';
+
+  return { intent, params: out, lowConfidence };
 }
+
 
 
 export async function parseText(text) {
