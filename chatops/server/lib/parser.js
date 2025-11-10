@@ -33,6 +33,10 @@ function mapLookup(table, value) {
   const key = String(value).toLowerCase();
   return table[key] || value;
 }
+// Alias rápido: usá tu parseLocal como fallback
+function parseWithRegex(text) {
+  return parseLocal(text);
+}
 
 function parseLocal(text) {
   const t = norm(text);
