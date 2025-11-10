@@ -392,12 +392,7 @@ function parseWithRegex(text) { return parseLocal(text); }
 export async function parseText(text) {
   console.log("\n--- PARSER IN ---", text);
 
-  // 0) Fast-path: ayuda (siempre, sin depender de USE_OLLAMA)
-  if (/^(ayuda|help|qué pod(e|é)s hacer\??|que pod(e|é)s hacer\??)$/i.test(text) || /\b(ayuda|help)\b/i.test(text)) {
-    const fast = { intent: 'ad_help', params: {}, lowConfidence: false };
-    console.log("[parser] fast-path help =", fast);
-    return fast;
-  }
+
 
   // 1) Intentá IA si está habilitada
   if (USE_OLLAMA) {
