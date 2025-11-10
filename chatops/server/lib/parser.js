@@ -154,7 +154,7 @@ Respuesta:
   const prompt = `${systemMsg}\n\n${fewshot}\n\nUsuario: "${text}"\nRespuesta:`.trim();
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(() => controller.abort(), 80000);
 
   const resp = await fetch(OLLAMA_GENERATE, {
     method: 'POST',
