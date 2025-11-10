@@ -1,24 +1,24 @@
 // import dotenv from 'dotenv';
 // dotenv.config();
 
-// const PS_BASE = process.env.PS_BASE || 'http://localhost:8080';
+const PS_BASE = process.env.PS_BASE || 'http://localhost:8080';
 // const API_KEY = process.env.PS_API_KEY || '';
 
-// async function doFetch(url, options = {}) {
-//   const headers = {
-//     'content-type': 'application/json',
-//     'x-api-key': API_KEY,
-//     ...(options.headers || {})
-//   };
-//   const resp = await fetch(url, { ...options, headers });
-//   if (!resp.ok) {
-//     const text = await resp.text().catch(() => '');
-//     throw new Error(`PS Agent error ${resp.status}: ${text}`);
-//   }
-//   const ct = resp.headers.get('content-type') || '';
-//   if (ct.includes('application/json')) return resp.json();
-//   return resp.text();
-// }
+async function doFetch(url, options = {}) {
+  const headers = {
+    'content-type': 'application/json',
+    'x-api-key': API_KEY,
+    ...(options.headers || {})
+  };
+  const resp = await fetch(url, { ...options, headers });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '');
+    throw new Error(`PS Agent error ${resp.status}: ${text}`);
+  }
+  const ct = resp.headers.get('content-type') || '';
+  if (ct.includes('application/json')) return resp.json();
+  return resp.text();
+}
 
 // async function postJson(path, body) {
 //   return doFetch(`${PS_BASE}${path}`, {
