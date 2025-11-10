@@ -393,6 +393,14 @@ export async function parseText(text) {
   try {
     if (USE_OLLAMA) {
       console.log("[parser] intentando IA (ollama)...");
+        // 0) Fast-path: help
+        if (/^(ayuda|help|qué pod(e|é)s hacer\??|que pod(e|é)s hacer\??)$/i.test(text) || /\b(ayuda|help)\b/i.test(text)) {
+          const fast = { intent: 'ad_help', params: {}, lowConfidence: false };
+          console.log("[parser] fast-path help =", fast);
+          return fast;
+        }
+
+
       const iaResult = await parseWithOllama(text);
       console.log("[parser] resultado IA =", iaResult);
 
