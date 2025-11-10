@@ -224,6 +224,16 @@ Respuesta:
   // Mapear grupos amistosos
   if (out.group) out.group = mapLookup(lookups.groups, out.group);
 
+  // Normalización específica por intent
+  const intentList = intent.split('|');
+
+  // Para create_group: aceptar "group" como alias de "name"
+  if (intentList.includes('ad_create_group')) {
+    if (!out.name && out.group) {
+      out.name = out.group;
+    }
+  }
+
   // Confidence
   const conf = Number(raw.confidence);
   const confidence = isNaN(conf) ? (intent === 'unknown' ? 0.2 : 0.85) : Math.max(0, Math.min(1, conf));

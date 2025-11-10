@@ -265,7 +265,7 @@ app.post('/chat/confirm', async (req, res) => {
     }
 
     writeLog({ ts: new Date().toISOString(), corr: req.__corr, userId, intent: payload.intent, params: payload.params, resultOk: true, message: 'OK', data: results });
-    return res.json({ ok: true, message: '✅ Acciones completadas', results });
+    return res.json({ ok: true, message: `✅ Acciones completadas , ${results.message}` , results });
 
   } catch (err) {
     dbg(`[ERR] ${req.__corr} /chat/confirm error=`, err);
