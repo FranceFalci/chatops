@@ -146,7 +146,7 @@ app.post('/chat', async (req, res) => {
   if (!text || !userId)
     return res.json({ ok: false, message: "❌ Falta text o userId" });
 
-  userId = "Administrator"; // DEBUG forzado para demo
+  userId = "Administrator"; 
   const role = getUserRole(userId);
 
   const parsed = await parseText(text);
@@ -156,14 +156,11 @@ app.post('/chat', async (req, res) => {
     return res.json({
       ok: true,
       message:
-        `Puedo hacer:
+        `Estoy prepardo para ayudarte con lo siguiente:
 • listar usuarios [filtro]
 • listar grupos [filtro]
-• listar miembros de GG_MiGrupo
 • crear usuario / crear grupo / agregar a grupo
-• desbloquear / habilitar / deshabilitar / eliminar usuario
-• DNS: crear/borrar A
-• IIS: estado / reciclar`
+`
     });
   }
 
@@ -174,6 +171,36 @@ app.post('/chat', async (req, res) => {
     return res.json({ ok: false, message: `❌ No tenés permisos para ${parsed.intent}` });
 
   const intents = parsed.intent.split("|");
+  // Normalización para ad_create_group
+  if (intents.includes('ad_create_group')) {
+    // alias "group" -> "name"
+    if (!parsed.params.name && parsed.params.group) {
+      parsed.params.name = parsed.params.group;
+      dbg(`[DBG] ${req.__corr} normalicé name <- group (${parsed.params.name})`);
+    }
+    // scope "Local" -> "DomainLocal"; default Global
+    const s = (parsed.params.scope || process.env.DEFAULT_SCOPE || 'Global').toString().trim().toLowerCase();
+    parsed.params.scope =
+      s === 'local' ? 'DomainLocal' :
+        s === 'domainlocal' ? 'DomainLocal' :
+          s === 'universal' ? 'Universal' : 'Global';
+    dbg(`[DBG] ${req.__corr} scope normalizado = ${parsed.params.scope}`);
+  }
+  // Normalización para ad_create_group
+  if (intents.includes('ad_create_group')) {
+    // alias "group" -> "name"
+    if (!parsed.params.name && parsed.params.group) {
+      parsed.params.name = parsed.params.group;
+      dbg(`[DBG] ${req.__corr} normalicé name <- group (${parsed.params.name})`);
+    }
+    // scope "Local" -> "DomainLocal"; default Global
+    const s = (parsed.params.scope || process.env.DEFAULT_SCOPE || 'Global').toString().trim().toLowerCase();
+    parsed.params.scope =
+      s === 'local' ? 'DomainLocal' :
+        s === 'domainlocal' ? 'DomainLocal' :
+          s === 'universal' ? 'Universal' : 'Global';
+    dbg(`[DBG] ${req.__corr} scope normalizado = ${parsed.params.scope}`);
+  }
 
   for (const it of intents) {
     const w = enforceWhitelists(it, parsed.params);
@@ -237,8 +264,6 @@ async function executeIntent(corr, intent, params) {
       case "ad_list_users": return { ok: true, data: await psAgent.adListUsers(params) };
       case "ad_list_groups": return { ok: true, data: await psAgent.adListGroups(params) };
       case "ad_list_group_members": return { ok: true, data: await psAgent.adListGroupMembers(params) };
-      case "iis_pool_status": return { ok: true, data: await psAgent.iisPoolStatus(params) };
-      case "iis_pool_recycle": return { ok: true, message: `🔄 Pool reciclado`, data: await psAgent.iisPoolRecycle(params) };
       default: return { ok: false, message: "Intent no implementado" };
     }
   } catch (err) {

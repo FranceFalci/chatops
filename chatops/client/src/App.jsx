@@ -12,7 +12,7 @@ export default function App() {
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
           <label style={{ fontSize: 12 }}>Usuario:</label>
           <select value={userId} onChange={e => setUserId(e.target.value)}>
-            <option value="helpdesk">helpdesk (HelpDesk)</option>
+            {/* <option value="helpdesk">helpdesk (HelpDesk)</option> */}
             <option value="admin">admin (Admin)</option>
           </select>
         </div>
