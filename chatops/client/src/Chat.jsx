@@ -21,9 +21,8 @@ export default function Chat({ userId }) {
   const [toast, setToast] = React.useState({ type: 'info', message: '' })
 
   const placeholders = [
-    'crear usuario Ana Gomez (sam: ana.gomez) en Usuarios',
-    'agregar a ana.gomez al grupo GG_Ventas',
-    'reciclá IntranetPool en WEB01'
+    'crear usuario Ana Gomez...',
+    
   ]
 
   const placeholder = React.useMemo(() => placeholders[Math.floor(Math.random()*placeholders.length)], [])
